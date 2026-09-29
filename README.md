@@ -188,3 +188,15 @@ python -m confidence_geography.inspect_jumps \
 ```
 
 Open the generated `index.html` in a browser. It shows the question, exact masked state, chosen token, previous fills, adjacent predictions and confidence changes. Final answers are hidden behind an expandable section to distinguish retrospective context from what the model actually saw. Download `cases.json` to share the selected cases. The report uses saved `analysis/events.csv` and traces; it does not load a model or run inference. Distances are tokens, not words. Cases rank by largest absolute distance, capped at three per problem and one per step; they are deliberately selected examples, not a prevalence estimate. Omit `--max-distance` for the largest jumps, use `--sort rise` to prioritize confidence increases, or replace `top1` with `threshold` to inspect batch choices. `--require-local` requires an adjacent eligible nonspecial in-answer alternative. The adjacent-alternative table also displays eligible special/post-stop candidates, explicitly marking special tokens. This report addition is awaiting execution on the saved Vast results; no local experiments were run.
+
+### Large confidence increases, rather than just large spatial moves
+
+```bash
+python -m confidence_geography.inspect_jumps \
+  --run runs/gsm8k_pilot/top1 --event-kind remote_rise \
+  --min-distance 10 --min-rise 0.20 --min-confidence 0.90 \
+  --same-token-only --sort rise \
+  --out runs/gsm8k_pilot/top1/analysis/confidence_rises
+```
+
+This selects the same predicted token rising by at least 20 percentage points to at least 90% probability, at least ten token positions from the previous fill. It includes predictions not immediately committed and labels that distinction explicitly. Use `--event-kind commit` to restrict to actual fills. The report displays the tokens revealed in the previous step. Neither mode establishes causality; previous fills are temporal predecessors. Remote-rise candidates come from the existing analysis CSV, which by default includes only increases of at least 0.15. To study smaller uncommitted increases, first regenerate analysis with a smaller `--rise`; lowering the report filter alone cannot recover excluded rows. These report filters have not been executed locally.

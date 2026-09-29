@@ -77,6 +77,11 @@ def main():
                         transform=ax.transAxes, va='top', fontsize=10,
                         bbox={'facecolor': 'white', 'alpha': .9, 'edgecolor': 'none'})
             else:
+                tick_step = next((s for s in (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000)
+                                  if (high-low)/s <= 20), max(1, (high-low)//20))
+                first_tick = -((-low)//tick_step) * tick_step
+                ax.set_xticks(list(range(first_tick, high+1, tick_step)))
+                ax.tick_params(axis='x', labelsize=8, rotation=60)
                 ax.set_title(f'{name}: full range, one bar per integer (n={problems} questions)')
         # Zoom is a crop, not a renormalized distribution; keep vertical scales equal.
         maximum = max(ax.get_ylim()[1] for ax in axes[row])
@@ -86,8 +91,35 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.out / 'distances.png', dpi=170)
     plt.close(fig)
+    # A standalone zoom avoids mistaking the full-range panel for the cropped view.
+    zoom_fig, zoom_axes = plt.subplots(2, 1, figsize=(16, 10), constrained_layout=True)
+    xx = list(range(-args.zoom, args.zoom+1))
+    for ax, (name, summary) in zip(zoom_axes, summaries.items()):
+        percentages = summary['distance_percentages']
+        ax.bar(xx, [percentages.get(d, 0) for d in xx], width=.8,
+               color=['#e58b20' if abs(d) == 1 else '#3478aa' for d in xx])
+        ax.set_xlim(-args.zoom-.5, args.zoom+.5)
+        ax.set_xticks(xx, labels=[str(d) for d in xx])
+        ax.tick_params(axis='x', labelsize=9, rotation=90)
+        ax.set_xlabel('Signed token distance from previous step (negative = left, positive = right)')
+        ax.set_ylabel('Mean within-problem percentage of fills')
+        ax.grid(axis='y', alpha=.2)
+        ax.set_axisbelow(True)
+        if summary['commits']:
+            ax.set_title(
+                f"{name} | neighbors: −1 = {summary['left_neighbor_percent']:.1f}%, "
+                f"+1 = {summary['right_neighbor_percent']:.1f}%\n"
+                f"Outside this window: left {summary['outside_zoom_left_percent']:.1f}%, "
+                f"right {summary['outside_zoom_right_percent']:.1f}% (included in denominator)")
+        else:
+            ax.set_title(f'{name}: no qualifying fills')
+    zoom_fig.suptitle(f'ZOOM ONLY: −{args.zoom} to +{args.zoom}, every integer labeled\n'
+                      'Orange = immediate neighbors; blue = nonadjacent')
+    zoom_fig.savefig(args.out / 'distances_zoom.png', dpi=170)
+    plt.close(zoom_fig)
     (args.out / 'distances.json').write_text(json.dumps(summaries, indent=2) + '\n')
-    print(f"Wrote {args.out / 'distances.png'} and {args.out / 'distances.json'}")
+    print(f"Open the standalone zoom: {args.out / 'distances_zoom.png'}")
+    print(f"Full-range comparison: {args.out / 'distances.png'}; exact values: {args.out / 'distances.json'}")
 
 
 if __name__ == '__main__':

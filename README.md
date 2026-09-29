@@ -176,3 +176,15 @@ python -m confidence_geography.distances \
 ```
 
 Open `distances_zoom.png` for the standalone ±20 zoom, with every integer labeled and immediate neighbors in orange. `distances.png` retains the full-range comparison. Both show out-of-window percentages. The two rows show all primary fills and only those with an adjacent option available. Percentages average within problems, matching the summary JSON; the zoom does not renormalize to the visible subset. Exact values and pooled counts are in `distances.json`. Replace `threshold` with `top1` for the single-fill condition. This addition has not been executed locally; run it on the exported data or Vast. Updating source is fine for analysis of completed runs; do not update source mid-collection if you intend to resume that run.
+
+## Read actual distant token choices
+
+Start with the single-token policy to make the previous fill unambiguous:
+
+```bash
+python -m confidence_geography.inspect_jumps \
+  --run runs/gsm8k_pilot/top1 --min-distance 10 --max-distance 20 \
+  --require-local --out runs/gsm8k_pilot/top1/analysis/jumps_10_20
+```
+
+Open the generated `index.html` in a browser. It shows the question, exact masked state, chosen token, previous fills, adjacent predictions and confidence changes. Final answers are hidden behind an expandable section to distinguish retrospective context from what the model actually saw. Download `cases.json` to share the selected cases. The report uses saved `analysis/events.csv` and traces; it does not load a model or run inference. Distances are tokens, not words. Cases rank by largest absolute distance, capped at three per problem and one per step; they are deliberately selected examples, not a prevalence estimate. Omit `--max-distance` for the largest jumps, use `--sort rise` to prioritize confidence increases, or replace `top1` with `threshold` to inspect batch choices. `--require-local` requires an adjacent eligible nonspecial in-answer alternative. The adjacent-alternative table also displays eligible special/post-stop candidates, explicitly marking special tokens. This report addition is awaiting execution on the saved Vast results; no local experiments were run.

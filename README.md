@@ -164,3 +164,15 @@ Download the generated `.tar.gz` and `.sha256` from Vast before removing the ins
 ## Validation status
 
 An initial 11-test CPU suite passed using a tiny, explicitly simulated model, including trace reconstruction, actual jump distances, EOS handling, policies, probability accounting and plot generation. Subsequent local-alternative instrumentation has an additional test queued for Vast. No real LLaDA inference or GSM8K experiment was run locally. GPU/checkpoint compatibility, actual throughput, memory usage and empirical findings remain to be established by the Vast smoke and pilot runs.
+
+## Zoomed signed-distance plots from existing CSVs
+
+No model inference or trace reprocessing is needed:
+
+```bash
+python -m confidence_geography.distances \
+  --events runs/gsm8k_pilot/threshold/analysis/events.csv \
+  --out runs/gsm8k_pilot/threshold/analysis --zoom 20
+```
+
+Open `distances.png`. It shows full-range and ±20 views with one bar per integer distance, immediate neighbors in orange, and out-of-window percentages. The two rows show all primary fills and only those with an adjacent option available. Percentages average within problems, matching the summary JSON; the zoom does not renormalize to the visible subset. Exact values and pooled counts are in `distances.json`. Replace `threshold` with `top1` for the single-fill condition. This addition has not been executed locally; run it on the exported data or Vast. Updating source is fine for analysis of completed runs; do not update source mid-collection if you intend to resume that run.

@@ -79,7 +79,7 @@ The default experiment runs two conditions on the same shuffled questions:
 
 This is an explicit uncached threshold baseline, **not a reproduction of Fast-dLLM's accelerated implementation**. Both conditions recompute the full sequence each step, with zero sampling temperature, no classifier-free guidance, and no EOS suppression. Full-sequence decoding is the default, so blocks cannot dictate the movement pattern. Optional `left_to_right` fixes fill order while leaving the model bidirectional; it is not an autoregressive-model baseline. `scheduled` supports a fixed total number of steps through the Python CLI.
 
-The pinned model is `GSAI-ML/LLaDA-8B-Instruct` at `08b83a6feb34df1a6011b80c3c00c7563e963b07`. Loading uses the checkpoint's custom code. Chat formatting comes from its tokenizer. Prompts request reasoning and a final `#### number`. No reference reasoning is shown to the model.
+The pinned model is `GSAI-ML/LLaDA-8B-Instruct` at `08b83a6feb34df1a6011b80c3c00c7563e963b07`. Loading uses the checkpoint's custom code. Chat formatting comes from its tokenizer. The user message is **exactly the dataset question**, with no added instruction to reason, solve, or use an answer marker. No reference reasoning is shown to the model. Manifests and results label this as `question_only_chat_v1`; trace headers also save the literal `user_message`, rendered prompt, and prompt token IDs. The original pilot used an added reasoning/`####` instruction and is a different prompt condition; retain it separately.
 
 The mask symbol cannot be committed. Its original probability and the unfiltered argmax are logged. Candidate probabilities remain those of the original full-vocabulary softmax: excluding MASK from candidate ranking does **not** renormalize them. Confidence and exact entropy are computed in FP32 over vocabulary chunks to limit memory.
 
@@ -112,7 +112,7 @@ Each step records **all still-masked positions**, including future blocks if blo
 - The full pre-step response state, committed IDs/positions, progress, model-forward time, block and stop-token context.
 - Above-threshold counts, fractions, contiguous islands and newly crossing counts at **0.5, 0.7, 0.8, 0.9, 0.95 and 0.99**. These are measurements; only `COMMIT_THRESHOLD` controls threshold decoding.
 
-The final result includes full token IDs, stop position, answer and reference, strict/lenient numeric scoring, timings, GPU peak allocation, token dictionary, and the retrospective word map. Strict accuracy requires the requested `####` marker. Lenient scoring falls back to the last numeric string and is reported separately; neither evaluates individual reasoning steps.
+The final result includes full token IDs, stop position, answer and reference, numeric scoring, timings, GPU peak allocation, token dictionary, and the retrospective word map. **`numeric_accuracy` is the primary answer score**: use the last `####` number if the model emits that marker naturally, otherwise the last numeric string. No marker is required. This is a heuristic that can misidentify answers when a response ends with another number; extraction methods are recorded for auditing. `correct_numeric` labels individual results. Legacy `strict_accuracy`/`correct_strict` fields still require a marker and remain only for compatibility/diagnostics, not as the primary score. `lenient_accuracy`/`correct_lenient` use the same numeric extraction as the primary score. None of these evaluates individual reasoning steps.
 
 The trace plus model revision and prompt reconstructs each observed state for future interventions. We do not save every vocabulary logit, hidden state, or attention matrix. Those would greatly increase volume and are not needed for this first question. JSONL is compressed incrementally; unfinished samples carry `.partial` and are excluded from exports. Traces may still be large; size the pilot before expanding.
 
@@ -200,3 +200,28 @@ python -m confidence_geography.inspect_jumps \
 ```
 
 This selects the same predicted token rising by at least 20 percentage points to at least 90% probability, at least ten token positions from the previous fill. It includes predictions not immediately committed and labels that distinction explicitly. Use `--event-kind commit` to restrict to actual fills. The report displays the tokens revealed in the previous step. Neither mode establishes causality; previous fills are temporal predecessors. Remote-rise candidates come from the existing analysis CSV, which by default includes only increases of at least 0.15. To study smaller uncommitted increases, first regenerate analysis with a smaller `--rise`; lowering the report filter alone cannot recover excluded rows. These report filters have not been executed locally.
+
+## Rerun after removing the added prompt instruction
+
+Run these commands on Vast, after the original pilot is finished. Keep the original results. If this is a new instance, clone the repository, restore the old `runs/gsm8k_pilot/` directory, and set up the environment with `bash scripts/vast.sh smoke` before reading its manifest.
+
+```bash
+cd /workspace/dllm-confidence-geography
+git pull --ff-only
+source .venv/bin/activate
+
+# Use the original dataset commit, so the default seed/offset select the same questions.
+export DATASET_REVISION="$(python -c 'import json; print(json.load(open("runs/gsm8k_pilot/top1/manifest.json"))["dataset_info"]["revision"])')"
+
+RUN_NAME=gsm8k_question_only_smoke SKIP_INSTALL=1 bash scripts/vast.sh smoke
+
+# After the smoke succeeds, run the complete paired pilot in a new directory.
+nohup env RUN_NAME=gsm8k_question_only_v1 SKIP_INSTALL=1 \
+  SAMPLES=100 LENGTH=256 BLOCK_LENGTH=0 SEED=1729 OFFSET=0 COMMIT_THRESHOLD=0.9 \
+  bash scripts/vast.sh pilot > /workspace/gsm8k_question_only_v1.log 2>&1 &
+tail -f /workspace/gsm8k_question_only_v1.log
+```
+
+These values match the original default pilot. If the original manifest has different settings, match them explicitly instead. `DATASET_REVISION` is inherited by the background process. `SKIP_INSTALL=1` assumes the existing environment was installed successfully; omit it on a fresh setup. **The smoke and pilot commands run LLaDA on Vast**, unlike the CSV/trace inspection commands. They run the updated simulated tests before loading the actual checkpoint. The question-only prompt/scoring changes have not been executed locally.
+
+The rerun changes the user-message content and makes numeric extraction (without a required marker) the primary evaluation. It preserves the decoder: BF16 model, FP32 probabilities, no random token sampling, no guidance, no cache, full response window, and MASK excluded from commitment without probability renormalization. EOS/EOT does not halt filling: the entire fixed window is filled and only final scoring/primary analysis are truncated at the first stop. Surface token categories and subword distances are approximate descriptions, not semantic labels. These choices should remain explicit when interpreting the results. Accuracy uses a heuristic and is not a matched official benchmark evaluation.

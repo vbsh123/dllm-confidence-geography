@@ -40,7 +40,7 @@ case "$mode" in
   full) count="${SAMPLES:-500}"; length="${LENGTH:-256}" ;;
 esac
 # Fresh forward pass over the full response. Two paired policies on exactly the same questions.
-dataset_args=()
+dataset_args=(--dataset-revision "${DATASET_REVISION:-main}")
 for policy in top1 threshold; do
   python -m confidence_geography.run \
     --out "$experiment_out/$policy" --policy "$policy" \

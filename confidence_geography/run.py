@@ -15,6 +15,8 @@ from .core import finite_json, nearest, numeric_answer, select, step_metrics, to
 
 MODEL = 'GSAI-ML/LLaDA-8B-Instruct'
 REVISION = '08b83a6feb34df1a6011b80c3c00c7563e963b07'
+PROMPT_PROTOCOL = 'question_only_chat_v1'
+SCORING_PROTOCOL = 'marked_answer_else_last_number_v1'
 
 
 def dump(path, obj):
@@ -132,9 +134,8 @@ def final_word_map(tokenizer, tokens):
 
 def collect_sample(model, tokenizer, config, sample, output):
     import torch
-    instruction = ('Solve this math problem. Show your reasoning, and end your response with '
-                   '#### followed by the final numerical answer.\n\n' + sample['question'])
-    prompt_text = tokenizer.apply_chat_template([{'role': 'user', 'content': instruction}],
+    # Preserve the dataset question verbatim; add no task or answer-format instructions.
+    prompt_text = tokenizer.apply_chat_template([{'role': 'user', 'content': sample['question']}],
                                                 tokenize=False, add_generation_prompt=True)
     prompt_ids = tokenizer.encode(prompt_text, add_special_tokens=False)
     if config['mask_id'] in prompt_ids:
@@ -157,6 +158,7 @@ def collect_sample(model, tokenizer, config, sample, output):
     partial = output / 'trace.jsonl.gz.partial'
     with gzip.open(partial, 'wt', encoding='utf-8', compresslevel=3) as handle, torch.inference_mode():
         emit(handle, {'type': 'header', 'schema_version': 1, 'config': config, 'sample': sample,
+                      'prompt_protocol': PROMPT_PROTOCOL, 'user_message': sample['question'],
                       'prompt_text': prompt_text, 'prompt_ids': prompt_ids, 'stop_ids': sorted(stop_ids)})
         for block_start in range(0, length, block):
             block_end = min(length, block_start + block)
@@ -221,7 +223,10 @@ def collect_sample(model, tokenizer, config, sample, output):
                    'final_ids': tokens, 'answer': answer, 'first_stop_position': end if end < length else None,
                    'first_stop_step': first_stop_step, 'answer_token_length': end,
                    'hit_length_limit': end == length, 'predicted_answer': predicted, 'gold_answer': gold,
-                   'answer_extraction': method, 'correct_strict': method == 'marked' and predicted == gold and gold is not None,
+                   'prompt_protocol': PROMPT_PROTOCOL, 'scoring_protocol': SCORING_PROTOCOL,
+                   'answer_extraction': method, 'correct_numeric': predicted == gold and gold is not None,
+                   # Keep legacy fields for old analysis consumers; strict is marker-only diagnostic.
+                   'correct_strict': method == 'marked' and predicted == gold and gold is not None,
                    'correct_lenient': predicted == gold and gold is not None,
                    'elapsed_seconds': time.perf_counter()-start_time,
                    'peak_gpu_bytes': torch.cuda.max_memory_allocated() if x.is_cuda else None, 'token_dictionary': dictionary,
@@ -287,6 +292,7 @@ def source_fingerprint():
 def execute(config, out):
     import torch
     import numpy as np
+    config = {**config, 'prompt_protocol': PROMPT_PROTOCOL, 'scoring_protocol': SCORING_PROTOCOL}
     manifest_path = out / 'manifest.json'
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
@@ -343,9 +349,15 @@ def execute(config, out):
             path.mkdir(parents=True, exist_ok=True)
             torch.cuda.reset_peak_memory_stats()
             result = collect_sample(model, tokenizer, config, sample, path)
-            print(f"DONE sample={sample['id']} strict_correct={result['correct_strict']} steps={result['steps']} seconds={result['elapsed_seconds']:.1f}", flush=True)
+            print(f"DONE sample={sample['id']} numeric_correct={result['correct_numeric']} extraction={result['answer_extraction']} steps={result['steps']} seconds={result['elapsed_seconds']:.1f}", flush=True)
     results = [json.loads((out / 'samples' / s['id'] / 'result.json').read_text()) for s in samples]
     dump(out / 'summary.json', {'sample_count': len(results),
+                              'prompt_protocol': PROMPT_PROTOCOL, 'scoring_protocol': SCORING_PROTOCOL,
+                              'numeric_accuracy': sum(r['correct_numeric'] for r in results)/len(results),
+                              'primary_accuracy_metric': 'numeric_accuracy',
+                              'strict_accuracy_note': 'Legacy marker-only diagnostic; not primary accuracy for question-only prompts',
+                              'answer_extraction_counts': {method: sum(r['answer_extraction'] == method for r in results)
+                                                           for method in sorted({r['answer_extraction'] for r in results})},
                               'strict_accuracy': sum(r['correct_strict'] for r in results)/len(results),
                               'lenient_accuracy': sum(r['correct_lenient'] for r in results)/len(results),
                               'length_limit_count': sum(r['hit_length_limit'] for r in results),

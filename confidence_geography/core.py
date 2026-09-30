@@ -110,7 +110,8 @@ def step_metrics(rows, previous, last_commits, thresholds):
 
 
 def numeric_answer(text, reference=False):
-    # Strict marked answer is primary. Last-number extraction is a separate diagnostic.
+    # Prefer a marker if one occurs naturally; otherwise use the last numeric string.
+    # Dataset references still require a marker. Generated answers do not.
     pattern = r'[-+]?\d[\d,]*(?:\.\d+)?'
     marked = re.findall(r'####\s*(' + pattern + r')', text)
     matches = marked or ([] if reference else re.findall(pattern, text))

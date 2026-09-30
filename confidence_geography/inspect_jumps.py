@@ -93,7 +93,7 @@ prediction changed: {esc(row.get('prediction_changed'))}. Change in probability 
 <details><summary>State BEFORE the previous batch was revealed (reconstructed)</summary>
 {token_strip(before, dictionary, mask_id, target, [])}</details>
 <details><summary>Final text and outcome — retrospective, not available at this step</summary>
-<p>Strict answer correct: {esc(result['correct_strict'])}</p>
+<p>Numeric answer match (extraction heuristic): {esc(result.get('correct_numeric', result['correct_lenient']))}. Extraction: {esc(result.get('answer_extraction', 'unknown'))}.</p>
 <pre>{esc(result['answer'])}</pre>
 <h3>Final token positions</h3>{token_strip(result['final_ids'], dictionary, mask_id, target, anchors)}
 <h3>Reference answer</h3><pre>{esc(result['reference'])}</pre></details>

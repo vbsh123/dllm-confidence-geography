@@ -7,7 +7,7 @@ from .run import collect_sample, dump
 class DemoTokenizer:
     all_special_ids = [0, 8, 9]
     eos_token_id = 8
-    pieces = ['<prompt>', 'First', ' ', '2', '+', '2', '#### ', '4', '<eos>', '<mask>']
+    pieces = ['<prompt>', 'First', ' ', '2', '+', '2', ' = ', '4', '<eos>', '<mask>']
     def apply_chat_template(self, messages, **kwargs): return messages[0]['content']
     def encode(self, text, **kwargs): return [0]
     def get_vocab(self): return {p: i for i, p in enumerate(self.pieces)}

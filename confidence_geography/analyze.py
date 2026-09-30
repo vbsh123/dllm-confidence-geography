@@ -68,6 +68,7 @@ def event_row(sample_id, step, row, result, kind):
             'answer_local_option_available': bool(answer_local) if anchors_valid else None,
             'best_answer_local_confidence': max((r['confidence'] for r in answer_local), default=None),
             'matches_final_token': row['token_id'] == result['final_ids'][row['position']],
+            'correct_numeric': result.get('correct_numeric', result['correct_lenient']),
             'correct_strict': result['correct_strict'], 'correct_lenient': result['correct_lenient']}
 
 
@@ -114,7 +115,7 @@ def sample_plot(steps, result, path):
         ax.set_xlabel('Response token position (zero-based)')
         if result['first_stop_position'] is not None:
             ax.axvline(result['first_stop_position'], color='orange', linestyle='--', label='final first stop')
-    fig.suptitle(f"Sample {result['sample_id']} | strict correct={result['correct_strict']} | red dots=commits")
+    fig.suptitle(f"Sample {result['sample_id']} | numeric match={result.get('correct_numeric', result['correct_lenient'])} | red dots=commits")
     fig.savefig(path, dpi=140)
     plt.close(fig)
 
@@ -210,6 +211,8 @@ def analyze_run(run, out, max_plots, rise):
         words = [e for e in primary if e['word_nonlocal'] is not None]
         rises = [e for e in sample_events if e['kind'] == 'remote_rise' and e['primary_population']]
         pp = {'sample_id': sid, 'correct_strict': result['correct_strict'], 'correct_lenient': result['correct_lenient'],
+              'correct_numeric': result.get('correct_numeric', result['correct_lenient']),
+              'prompt_protocol': result.get('prompt_protocol', 'legacy_reasoning_and_marker'),
               'steps': result['steps'], 'hit_length_limit': result['hit_length_limit'],
               'primary_commits': len(primary), 'nonlocal_commits': sum(e['nonlocal'] for e in primary),
               'nonlocal_fraction': sum(e['nonlocal'] for e in primary)/len(primary) if primary else None,
@@ -232,6 +235,10 @@ def analyze_run(run, out, max_plots, rise):
                'nonlocal_with_local_alternative_problem_bootstrap': bootstrap_mean([p['nonlocal_fraction_with_local_alternative'] for p in problem_rows if p['nonlocal_fraction_with_local_alternative'] is not None]),
                'word_nonlocal_fraction_problem_bootstrap': bootstrap_mean([p['word_nonlocal_fraction'] for p in problem_rows if p['word_nonlocal_fraction'] is not None]),
                'strict_accuracy': sum(p['correct_strict'] for p in problem_rows)/len(paths),
+               'numeric_accuracy': sum(p['correct_numeric'] for p in problem_rows)/len(paths),
+               'primary_accuracy_metric': 'numeric_accuracy',
+               'strict_accuracy_note': 'Marker-only diagnostic; not primary accuracy for question-only prompts',
+               'prompt_protocols': sorted({p['prompt_protocol'] for p in problem_rows}),
                'length_limit_fraction': sum(p['hit_length_limit'] for p in problem_rows)/len(paths),
                'remote_rise_events': sum(p['remote_rise_count'] for p in problem_rows)}
     dump(out / 'summary.json', summary)

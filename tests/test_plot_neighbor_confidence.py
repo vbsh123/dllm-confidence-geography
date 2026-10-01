@@ -4,10 +4,27 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from confidence_geography.plot_neighbor_confidence import histogram, trace_pairs
+from confidence_geography.plot_neighbor_confidence import (
+    calculate_neighbor_distributions, histogram, trace_pairs,
+)
 
 
 class NeighborHistogramTests(unittest.TestCase):
+    def test_requested_distributions_recompute_delta_without_mutating_inputs(self):
+        pair = {'before': .25, 'after': .75, 'delta': 999}
+        result = calculate_neighbor_distributions([pair], bins=4)
+        self.assertEqual(result['after_probabilities'], [.75])
+        self.assertEqual(result['probability_deltas'], [.5])
+        self.assertEqual(result['pairs'][0]['delta'], .5)
+        self.assertEqual(pair['delta'], 999)
+        self.assertEqual(sum(r['count'] for r in result['histograms']['top1p_after']), 1)
+
+    def test_distance_filter_selects_seed_distance_not_neighbor_distance(self):
+        pairs = [{'before': .8, 'after': .6, 'max_adjacent_seed_distance': 1},
+                 {'before': .25, 'after': .75, 'max_adjacent_seed_distance': 4}]
+        result = calculate_neighbor_distributions(pairs, min_seed_distance=4)
+        self.assertEqual(result['probability_deltas'], [.5])
+
     def test_histogram_includes_exact_zero_and_one(self):
         rows = histogram([0, .5, 1, 1], 0, 1, 2)
         self.assertEqual([r['count'] for r in rows], [1, 3])

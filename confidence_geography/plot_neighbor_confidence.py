@@ -101,21 +101,62 @@ def histogram(values, low, high, bins):
             for i, n in enumerate(counts)]
 
 
-def generate(pairs, out, minimum=0, bins=50, label=None, log_y=False):
-    pairs = [p for p in pairs if p['max_adjacent_seed_distance'] >= minimum]
-    if not pairs:
+def calculate_neighbor_distributions(pairs, min_seed_distance=0, bins=50):
+    """Calculate exactly the two requested distributions, without reading or plotting.
+
+    Each input pair describes ONE still-masked neighbor before/after a reveal:
+      pair['before']: top1 probability before reveal
+      pair['after']:  top1 probability on the next forward pass
+      pair['max_adjacent_seed_distance']: optional distance filter's input
+
+    By default, include all pairs. The top predicted token can change between
+    passes: delta compares their top1 probabilities, not the same token's p.
+    Returns raw values, histogram bins/counts/percentages, and selected pairs.
+    Input dictionaries are not modified. No model, file I/O, or plotting here.
+    """
+    if min_seed_distance < 0 or bins < 2:
+        raise ValueError('Distance must be nonnegative and bins must be >=2')
+
+    selected_pairs = []
+    after_probabilities = []
+    probability_deltas = []
+
+    for pair in pairs:
+        if min_seed_distance and pair['max_adjacent_seed_distance'] < min_seed_distance:
+            continue
+
+        before_probability = pair['before']
+        after_probability = pair['after']
+        delta = after_probability - before_probability
+
+        after_probabilities.append(after_probability)
+        probability_deltas.append(delta)
+        selected_pairs.append({**pair, 'delta': delta})
+
+    if not selected_pairs:
         raise ValueError('No qualifying before/after neighbors; check input and distance filter')
-    # Compute requested delta explicitly, rather than trusting a cached derived column.
-    for row in pairs:
-        row['delta'] = row['after']-row['before']
+
+    return {
+        'after_probabilities': after_probabilities,
+        'probability_deltas': probability_deltas,
+        'histograms': {
+            'top1p_after': histogram(after_probabilities, 0, 1, bins),
+            'top1p_delta': histogram(probability_deltas, -1, 1, bins*2),
+        },
+        'pairs': selected_pairs,
+    }
+
+
+def generate(pairs, out, minimum=0, bins=50, label=None, log_y=False):
+    calculated = calculate_neighbor_distributions(pairs, minimum, bins)
+    pairs = calculated['pairs']
+    after = calculated['after_probabilities']
+    delta = calculated['probability_deltas']
+    distributions = calculated['histograms']
     policies = {p.get('policy') for p in pairs if p.get('policy')}
     if len(policies) > 1:
         raise ValueError('Mixed policies in neighbor data')
     label = label or next(iter(policies), 'Saved decoding run')
-    after = [p['after'] for p in pairs]
-    delta = [p['delta'] for p in pairs]
-    distributions = {'top1p_after': histogram(after, 0, 1, bins),
-                     'top1p_delta': histogram(delta, -1, 1, bins*2)}
     scope = ('All valid reveals' if minimum == 0 else
              f'Seed distance >= {minimum}: at least {minimum-1} intervening MASKs')
     summary = {

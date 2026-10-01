@@ -252,7 +252,79 @@ ones. No model inference was used for these checks. Note that top1's
 `top1_seed_next_valid/continue_new_region` excludes 11 special/post-stop next
 choices (781/1,755); this explains the 44.2% versus 44.5% denominators.
 
-## Earlier validation status
+## Distance/confidence histograms and active-region dynamics
+
+This additional **offline** analysis reads the same raw traces and creates PNG
+and PDF plots. It uses NumPy/Matplotlib (already project dependencies), never a
+model. It can also collect data with standard-library Python using `--no-plots`,
+then plot later in an environment with these two packages installed.
+
+```bash
+python -m confidence_geography.region_dynamics \
+  --run /path/to/top1.zip --out analysis/top1_dynamics \
+  --gaps 1 2 3 4 8 16 --focus-gap 4
+
+python -m confidence_geography.region_dynamics \
+  --run /path/to/threshold.zip --out analysis/threshold_dynamics \
+  --gaps 1 2 3 4 8 16 --focus-gap 4
+
+# To render again without re-reading the original traces:
+python -m confidence_geography.region_dynamics \
+  --out analysis/top1_dynamics --plots-only
+```
+
+Open `report.md`, or the PNG/PDF figures directly:
+
+- `distances`: signed distance from the previous batch, full/zoomed views, and
+  number of masks to the nearest filled token or prompt boundary.
+- `neighbor_confidence`: distributions of top1 probability after reveal and
+  top1-probability delta; overlays same-token probability changes and plots
+  before versus after. Rows compare all reveals with isolated seed reveals.
+- `region_activity`: region counts over decoding progress, sensitivity to X,
+  and maximum candidate confidence for recent/older/unassigned regions.
+- `region_behavior`: direction of commitments and confidence history at fixed
+  would-be seed positions before the new-region commitment.
+- `example_timeline`: a saved question's region spans and confidence maxima
+  over actual decoding steps.
+
+Raw outputs are `summary.json`, `frames.jsonl.gz`, `neighbors.csv.gz`, and
+`birth_history.csv.gz`. Frames store each region's bounds and maximum candidate
+confidence, so individual examples can be inspected beyond aggregate plots.
+
+**This X counts actual intervening masks**, unlike the earlier index-distance
+cutoff. With X=4, positions 0 and 5 are separate; positions 0 and 4 belong to the
+same region. Such a region can contain internal masked holes. An occupied region
+contains filled response text before the final stop. A recently touched region
+contains a token committed in the previous 5 (or 10) actual steps. Regions can
+merge. The prompt is not counted as an occupied response region, but it and
+full-window filled stop tokens remain anchors when identifying isolated births.
+
+A masked candidate is assigned to every occupied region it would join if
+revealed under the X-gap rule. Some candidates bridge two regions. Maxima use
+the previous-5-step activity definition; unassigned positions join no region.
+Candidate counts differ, so these maxima are descriptive, not a controlled
+comparison. Tracking future seed positions backward is also conditioned on their
+eventual selection.
+
+For AR-like behavior, the script separately measures immediate right expansion,
+left expansion, internal-hole filling, skips, and bridges. The
+`gap_X/recent5_single_region_commits/leftmost_unresolved` rate checks the first
+eligible mask after a region's left endpoint, including immediate right
+extension, among commitments assigned to a single recently touched region with
+such a candidate. This is a local spatial proxy; threshold tokens in a batch do
+not have a sequential order.
+
+Neighbor observations retain the actual next step even when it commits only
+special/post-stop tokens, and omit neighbors committed simultaneously. Therefore
+the threshold neighbor distribution is a selected population of still-masked
+neighbors and should not be directly interpreted as an improvement over top1.
+Figures state weighting; region counts summarize pre-stop response states while
+the answer still has masks. Mean probability and mean change are not substitutes
+for the full distributions.
+
+Offline tests: `python -m unittest discover -s tests -p 'test_region*.py' -v`.
+
+## Initial experiment validation status
 
 An initial 11-test CPU suite passed using a tiny, explicitly simulated model, including trace reconstruction, actual jump distances, EOS handling, policies, probability accounting and plot generation. Subsequent local-alternative instrumentation has an additional test queued for Vast. No real LLaDA inference or GSM8K experiment was run locally. GPU/checkpoint compatibility, actual throughput, memory usage and empirical findings remain to be established by the Vast smoke and pilot runs.
 

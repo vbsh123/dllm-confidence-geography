@@ -1,7 +1,7 @@
-"""Make two offline histograms: neighbor top1-p AFTER reveal, and AFTER-BEFORE.
+"""Plot neighbor confidence AFTER reveals away from the CURRENT filled region.
 
-Run directly or as a module. No model, torch, or GPU is used.
-Plotting requires matplotlib (already a project dependency).
+All selection, pairing, calculation, and plotting live in
+ generate_neighbor_confidence_plots(). Saved traces only; no model inference.
 """
 import argparse
 import csv
@@ -12,235 +12,255 @@ from pathlib import Path
 import statistics
 
 if __package__:
-    from .region_stats import Source
+    from .region_stats import Source  # ZIP/directory file reading only.
 else:
     from region_stats import Source
 
 
-def trace_pairs(path):
-    """Yield each adjacent still-masked position once per actual transition."""
-    source = Source(path)
+def generate_neighbor_confidence_plots(run, out, bins=50, label=None, log_y=False):
+    """Read traces, select non-neighboring reveals, pair neighbors, and plot.
+
+    At reveal step t:
+      * CURRENT region = contiguous filled response text containing a valid
+        commitment from step t-1. A threshold batch may define several regions.
+      * Select a token committed at t only if it is neither inside nor directly
+        beside ANY current region, measured in the state BEFORE that reveal.
+        No arbitrary distance-4 cutoff. Returning beside OLDER text is allowed.
+      * For its neighbors (-1/+1), compare top1-p before the reveal (forward t)
+        with top1-p after the reveal (forward t+1). Keep only still-masked ones.
+      * Plot after-p and after-p minus before-p. The predicted token may change.
+
+    Threshold observations follow the entire batch; they cannot establish one
+    seed's individual effect. Same-batch bridging is not an extra exclusion:
+    selection always refers to the PRE-reveal current-region boundaries.
+    """
+    run, out = Path(run), Path(out)
+    if bins < 2:
+        raise ValueError('bins must be at least 2')
+    if out.exists() and any(out.iterdir()):
+        raise ValueError('Use a new/empty output folder')
+    out.mkdir(parents=True, exist_ok=True)
+
+    pairs = []
+    selected_reveals = []
+    samples_seen = set()
     policy = None
-    seen = set()
+    source = Source(run)
+
+    # 1. Read each question's saved forward passes. Source only handles file I/O.
     try:
         for number, name in enumerate(source.names, 1):
             result = source.result(name)
-            sid = str(result['sample_id'])
-            if sid in seen:
-                raise ValueError('Duplicate sample: use one policy/run at a time')
-            seen.add(sid)
-            end = result['answer_token_length']
-            previous = None
+            sample_id = str(result['sample_id'])
+            if sample_id in samples_seen:
+                raise ValueError('Duplicate question: use one policy/run at a time')
+            samples_seen.add(sample_id)
+            answer_end = result['answer_token_length']
+            token_dictionary = result['token_dictionary']
+            before_step = None
+
             for record in source.records(name):
                 if record['type'] == 'header':
                     config = record['config']
+                    mask_id = config['mask_id']
                     if policy is not None and policy != config['policy']:
                         raise ValueError('Mixed policies: analyze top1 and threshold separately')
                     policy = config['policy']
-                    mask_id = config['mask_id']
                     continue
                 if record['type'] != 'step':
                     continue
-                rows = {r['position']: r for r in record['positions']}
-                if previous is not None:
-                    if record['step'] != previous['step']+1:
-                        raise ValueError('Trace steps must be consecutive')
-                    seeds = [p for p, r in previous['rows'].items()
-                             if r['committed'] and p < end and not r['special']]
-                    neighbors = {p+d for p in seeds for d in (-1, 1)}
-                    anchors = {-1} | {p for p, tid in enumerate(previous['state']) if tid != mask_id}
-                    seed_distances = {p: min(abs(p-a) for a in anchors) for p in seeds}
-                    for p in sorted(neighbors):
-                        before, after = previous['rows'].get(p), rows.get(p)
-                        if before is None or after is None or p >= end:
-                            continue  # A co-committed position is no longer masked.
-                        if before['special'] or not before['eligible']:
-                            continue
-                        if not math.isclose(after['previous_confidence'], before['confidence'], abs_tol=1e-6):
-                            raise ValueError('Previous confidence does not match the preceding pass')
-                        yield {
-                            'sample': sid, 'step': previous['step'], 'position': p,
-                            'before': before['confidence'], 'after': after['confidence'],
-                            'delta': after['confidence']-before['confidence'],
-                            'changed': before['token_id'] != after['token_id'],
-                            'before_token': before['text'], 'after_token': after['text'],
-                            'after_special': after['special'], 'policy': policy,
-                            'max_adjacent_seed_distance': max(seed_distances[q] for q in seeds if abs(q-p) == 1),
-                        }
-                previous = {'step': record['step'], 'rows': rows, 'state': record['state_ids']}
+                if before_step is None:
+                    before_step = record
+                    continue
+                if record['step'] != before_step['step'] + 1:
+                    raise ValueError('Trace steps must be consecutive')
+
+                # before_step is forward t, before its commitments are inserted.
+                # record is forward t+1, after those commitments were inserted.
+                before_rows = {r['position']: r for r in before_step['positions']}
+                after_rows = {r['position']: r for r in record['positions']}
+                state_before_reveal = before_step['state_ids']
+
+                # 2. Find the CURRENT filled region(s), using commitments at t-1.
+                # Expand from each previous commitment through contiguous filled
+                # positions. This avoids calling an extension of the same region
+                # a jump merely because the latest token lies inside that region.
+                current_regions = set()
+                for previous_position in before_step['previous_commits']:
+                    if previous_position >= answer_end:
+                        continue
+                    previous_token = state_before_reveal[previous_position]
+                    if previous_token == mask_id:
+                        raise ValueError('A previous commitment is unexpectedly masked')
+                    if token_dictionary[str(previous_token)]['special']:
+                        continue
+                    left = right = previous_position
+                    while left > 0 and state_before_reveal[left-1] != mask_id:
+                        left -= 1
+                    while right+1 < answer_end and state_before_reveal[right+1] != mask_id:
+                        right += 1
+                    current_regions.add((left, right))
+
+                if not current_regions:
+                    # No valid previous region, e.g. only EOS was just revealed.
+                    before_step = record
+                    continue
+
+                # 3. Select reveals AWAY FROM the current region(s).
+                # Example: current region [0..4], reveal 5 -> exclude (adjacent).
+                #          current region [0..4], reveal 6 -> include.
+                # A reveal can be next to an older region and still qualify.
+                selected_seeds = []
+                for position, row in before_rows.items():
+                    if not row['committed'] or position >= answer_end or row['special']:
+                        continue
+                    touches_current_region = any(
+                        left-1 <= position <= right+1
+                        for left, right in current_regions
+                    )
+                    if not touches_current_region:
+                        selected_seeds.append(position)
+
+                if selected_seeds:
+                    selected_reveals.append({
+                        'sample': sample_id, 'step': before_step['step'],
+                        'current_regions': sorted(current_regions),
+                        'seed_positions': sorted(selected_seeds),
+                        'seed_tokens': [before_rows[p]['text'] for p in sorted(selected_seeds)],
+                        'all_batch_commits': before_step['commit_positions'],
+                    })
+
+                # 4. Inspect exactly -1/+1 around the selected NEWLY revealed
+                # tokens. A neighbor shared by two seeds is counted only once.
+                neighbor_positions = {p+d for p in selected_seeds for d in (-1, 1)}
+                for position in sorted(neighbor_positions):
+                    before = before_rows.get(position)
+                    after = after_rows.get(position)
+                    if before is None or after is None or position >= answer_end:
+                        continue  # Already filled, or co-committed in batch t.
+                    if before['special'] or not before['eligible']:
+                        continue
+                    if not math.isclose(after['previous_confidence'], before['confidence'], abs_tol=1e-6):
+                        raise ValueError('Neighbor confidence is not aligned with the previous pass')
+
+                    # 5. These are the two requested quantities, for this SAME
+                    # still-masked position on two consecutive forward passes.
+                    probability_before = before['confidence']
+                    probability_after = after['confidence']
+                    delta = probability_after - probability_before
+
+                    pairs.append({
+                        'sample': sample_id, 'step': before_step['step'],
+                        'position': position,
+                        'seed_positions': [p for p in selected_seeds if abs(p-position) == 1],
+                        'current_regions': sorted(current_regions),
+                        'before': probability_before, 'after': probability_after, 'delta': delta,
+                        'before_token': before['text'], 'after_token': after['text'],
+                        'prediction_changed': before['token_id'] != after['token_id'],
+                        'after_special': after['special'],
+                    })
+                before_step = record
             if number % 10 == 0 or number == len(source.names):
                 print(f'Read {number}/{len(source.names)} saved traces', flush=True)
     finally:
         source.close()
 
+    after_values = [pair['after'] for pair in pairs]
+    delta_values = [pair['delta'] for pair in pairs]
+    label = label or policy or 'Saved decoding run'
 
-def saved_pairs(path):
-    """Also accept neighbors.csv.gz produced by region_dynamics, avoiding a rescan."""
-    opener = gzip.open if path.suffix == '.gz' else open
-    with opener(path, 'rt', encoding='utf-8', newline='') as f:
-        for row in csv.DictReader(f):
-            for key in ('before', 'after', 'delta'):
-                row[key] = float(row[key])
-            for key in ('step', 'position', 'max_adjacent_seed_distance'):
-                row[key] = int(row[key])
-            for key in ('changed', 'after_special'):
-                row[key] = row[key].lower() == 'true'
-            yield row
-
-
-def histogram(values, low, high, bins):
-    width = (high-low)/bins
-    counts = [0]*bins
-    for value in values:
-        if not math.isfinite(value) or not low <= value <= high:
-            raise ValueError(f'Value {value} outside histogram bounds [{low}, {high}]')
-        index = min(bins-1, int((value-low)/width))
-        counts[index] += 1
-    return [{'left': low+i*width, 'right': low+(i+1)*width, 'count': n,
-             'percent': 100*n/len(values) if values else None}
-            for i, n in enumerate(counts)]
-
-
-def calculate_neighbor_distributions(pairs, min_seed_distance=0, bins=50):
-    """Calculate exactly the two requested distributions, without reading or plotting.
-
-    Each input pair describes ONE still-masked neighbor before/after a reveal:
-      pair['before']: top1 probability before reveal
-      pair['after']:  top1 probability on the next forward pass
-      pair['max_adjacent_seed_distance']: optional distance filter's input
-
-    By default, include all pairs. The top predicted token can change between
-    passes: delta compares their top1 probabilities, not the same token's p.
-    Returns raw values, histogram bins/counts/percentages, and selected pairs.
-    Input dictionaries are not modified. No model, file I/O, or plotting here.
-    """
-    if min_seed_distance < 0 or bins < 2:
-        raise ValueError('Distance must be nonnegative and bins must be >=2')
-
-    selected_pairs = []
-    after_probabilities = []
-    probability_deltas = []
-
-    for pair in pairs:
-        if min_seed_distance and pair['max_adjacent_seed_distance'] < min_seed_distance:
-            continue
-
-        before_probability = pair['before']
-        after_probability = pair['after']
-        delta = after_probability - before_probability
-
-        after_probabilities.append(after_probability)
-        probability_deltas.append(delta)
-        selected_pairs.append({**pair, 'delta': delta})
-
-    if not selected_pairs:
-        raise ValueError('No qualifying before/after neighbors; check input and distance filter')
-
-    return {
-        'after_probabilities': after_probabilities,
-        'probability_deltas': probability_deltas,
-        'histograms': {
-            'top1p_after': histogram(after_probabilities, 0, 1, bins),
-            'top1p_delta': histogram(probability_deltas, -1, 1, bins*2),
-        },
-        'pairs': selected_pairs,
-    }
-
-
-def generate(pairs, out, minimum=0, bins=50, label=None, log_y=False):
-    calculated = calculate_neighbor_distributions(pairs, minimum, bins)
-    pairs = calculated['pairs']
-    after = calculated['after_probabilities']
-    delta = calculated['probability_deltas']
-    distributions = calculated['histograms']
-    policies = {p.get('policy') for p in pairs if p.get('policy')}
-    if len(policies) > 1:
-        raise ValueError('Mixed policies in neighbor data')
-    label = label or next(iter(policies), 'Saved decoding run')
-    scope = ('All valid reveals' if minimum == 0 else
-             f'Seed distance >= {minimum}: at least {minimum-1} intervening MASKs')
-    summary = {
-        'label': label, 'observations': len(pairs),
-        'questions': len({p['sample'] for p in pairs}),
-        'reveal_steps': len({(p['sample'], p['step']) for p in pairs}),
-        'min_seed_distance': minimum, 'scope': scope,
-        'mean_after': statistics.mean(after), 'median_after': statistics.median(after),
-        'mean_delta': statistics.mean(delta), 'median_delta': statistics.median(delta),
-        'prediction_changed_percent': 100*statistics.mean(p['changed'] for p in pairs),
-        'definitions': {
-            'neighbor': 'Exactly -1 or +1 from a revealed token; still masked on the next pass.',
-            'after': 'Maximum candidate-token probability at that position on the next forward pass.',
-            'delta': 'max-p(after) minus max-p(before); the maximizing token may change.',
-            'weighting': 'Pooled neighbor observations, not equal-question averaging. Each position counted once per transition.',
-            'population': 'Revealed seeds and pre-reveal neighbor predictions are nonspecial and before final stop. '
-                          'Eligible pre-reveal positions only. After predictions retained even if special; actual next step never skipped.',
-            'threshold': 'Neighbors committed in the same batch are excluded; observations follow the entire batch.',
-            'filter': 'Distance from seed to nearest pre-reveal filled response position or prompt boundary, not distance from neighbor.',
-        },
-    }
+    # 6. Build and draw the two histograms. Y is percent of ALL selected paired
+    # observations; delta is in probability units (0.1 = 10 percentage points).
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    for name, rows in distributions.items():
-        fig, ax = plt.subplots(figsize=(9, 5.5), constrained_layout=True)
-        centers = [(r['left']+r['right'])/2 for r in rows]
-        width = rows[0]['right']-rows[0]['left']
-        ax.bar(centers, [r['percent'] for r in rows], width=width*.95, color='#3478aa')
-        if name == 'top1p_after':
-            title = 'Adjacent masked tokens: top1 probability AFTER reveal'
-            ax.set_xlabel('Top1 probability after reveal')
-            ax.set_xlim(0, 1)
-            ax.set_xticks([i/10 for i in range(11)])
-        else:
-            title = 'Adjacent masked tokens: change in top1 probability'
-            ax.set_xlabel('Top1-p after - top1-p before (0.1 = 10 percentage points)')
-            ax.set_xlim(-1, 1)
-            ax.set_xticks([i/5 for i in range(-5, 6)])
-            ax.axvline(0, color='#333333', linewidth=1)
+    for filename, values, low, high, bin_count, title, xlabel in [
+        ('top1p_after', after_values, 0, 1, bins,
+         'Neighbor top1 probability AFTER a non-neighboring reveal',
+         'Top1 probability after reveal'),
+        ('top1p_delta', delta_values, -1, 1, bins*2,
+         'Neighbor top1 probability change AFTER a non-neighboring reveal',
+         'Top1-p after - top1-p before (0.1 = 10 percentage points)'),
+    ]:
+        width = (high-low)/bin_count
+        counts = [0]*bin_count
+        for value in values:
+            if not math.isfinite(value) or not low <= value <= high:
+                raise ValueError(f'Probability value {value} outside [{low}, {high}]')
+            index = min(bin_count-1, int((value-low)/width))
+            counts[index] += 1
+        hist = [{'left': low+i*width, 'right': low+(i+1)*width,
+                 'count': count, 'percent': 100*count/len(values) if values else None}
+                for i, count in enumerate(counts)]
+        fig, ax = plt.subplots(figsize=(10, 5.5), constrained_layout=True)
+        ax.bar([(r['left']+r['right'])/2 for r in hist],
+               [r['percent'] or 0 for r in hist], width=width*.95, color='#3478aa')
+        ax.set_xlim(low, high)
+        ax.set_xlabel(xlabel)
         ax.set_ylabel('Percentage of paired neighbor observations')
-        ax.set_title(f'{title}\n{label} | {scope} | n={len(pairs):,}', fontsize=11)
+        ax.set_title(f'{title}\n{label} | away from current region(s) | n={len(values):,}', fontsize=11)
         ax.spines[['top', 'right']].set_visible(False)
         ax.grid(axis='y', alpha=.2)
         ax.set_axisbelow(True)
-        if log_y:
+        if filename == 'top1p_delta':
+            ax.axvline(0, color='#333333', linewidth=1)
+        if not values:
+            ax.text(.5, .5, 'No qualifying neighbor observations', ha='center', transform=ax.transAxes)
+        elif log_y:
             ax.set_yscale('log')
         for extension in ('png', 'pdf'):
-            fig.savefig(out/f'{name}.{extension}', dpi=180)
+            fig.savefig(out/f'{filename}.{extension}', dpi=180)
         plt.close(fig)
-        with (out/f'{name}.csv').open('w', encoding='utf-8', newline='') as f:
+        with (out/f'{filename}.csv').open('w', encoding='utf-8', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=['left', 'right', 'count', 'percent'])
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows(hist)
+
+    # 7. Save the exact selected reveals and before/after pairs for inspection.
+    with gzip.open(out/'selected_reveals.jsonl.gz', 'wt', encoding='utf-8') as f:
+        for reveal in selected_reveals:
+            f.write(json.dumps(reveal, ensure_ascii=False)+'\n')
     with gzip.open(out/'paired_neighbors.csv.gz', 'wt', encoding='utf-8', newline='') as f:
-        fields = ['sample', 'step', 'position', 'before', 'after', 'delta', 'changed',
-                  'before_token', 'after_token', 'after_special', 'max_adjacent_seed_distance']
-        writer = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
+        fields = ['sample', 'step', 'position', 'seed_positions', 'current_regions',
+                  'before', 'after', 'delta', 'before_token', 'after_token',
+                  'prediction_changed', 'after_special']
+        writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
-        writer.writerows(pairs)
+        for pair in pairs:
+            writer.writerow({k: json.dumps(v) if isinstance(v, list) else v for k, v in pair.items()})
+    summary = {
+        'label': label, 'input': str(run.resolve()), 'questions_read': len(samples_seen),
+        'observations': len(pairs), 'questions_with_pairs': len({p['sample'] for p in pairs}),
+        'qualifying_reveal_steps_with_next_pass': len(selected_reveals),
+        'qualifying_seeds_with_next_pass': sum(len(r['seed_positions']) for r in selected_reveals),
+        'mean_after': statistics.mean(after_values) if pairs else None,
+        'median_after': statistics.median(after_values) if pairs else None,
+        'mean_delta': statistics.mean(delta_values) if pairs else None,
+        'median_delta': statistics.median(delta_values) if pairs else None,
+        'definition': 'Current region: contiguous pre-reveal filled response text containing a '
+                      'valid previous-step commitment. Select commits neither inside nor adjacent to '
+                      'any such region. Return to older regions is allowed. No distance-4 cutoff. '
+                      'Pair immediate seed neighbors still masked on next actual forward pass. '
+                      'Seeds and pre-reveal neighbor predictions nonspecial/pre-final-stop; neighbors '
+                      'eligible before reveal. After predictions retained even if special. '
+                      'Threshold effects are after the entire batch; same-batch bridges are not excluded. '
+                      'Histogram percentages pool unique neighbor positions per step. '
+                      'Delta compares maxima even when the predicted token changes.',
+    }
     (out/'summary.json').write_text(json.dumps(summary, indent=2)+'\n', encoding='utf-8')
     return summary
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument('--run', type=Path, help='One saved policy directory or ZIP')
-    source.add_argument('--neighbors', type=Path, help='Existing neighbors.csv.gz from region_dynamics')
+    parser.add_argument('--run', type=Path, required=True, help='One saved policy directory or ZIP')
     parser.add_argument('--out', type=Path, required=True, help='New/empty output folder')
-    parser.add_argument('--min-seed-distance', type=int, default=0,
-                        help='Optional index-distance filter; 4 = at least 3 intervening MASKs. Default: all reveals.')
-    parser.add_argument('--bins', type=int, default=50, help='Bins over probability range 0..1; delta uses twice as many')
-    parser.add_argument('--label', help='Optional plot label, useful with --neighbors')
-    parser.add_argument('--log-y', action='store_true', help='Logarithmic y-axis to inspect smaller histogram bars')
+    parser.add_argument('--bins', type=int, default=50)
+    parser.add_argument('--label')
+    parser.add_argument('--log-y', action='store_true')
     args = parser.parse_args()
-    if args.min_seed_distance < 0 or args.bins < 2:
-        parser.error('Distance must be nonnegative and bins must be >=2')
-    if args.out.exists() and any(args.out.iterdir()):
-        parser.error('Use a new/empty output folder')
-    args.out.mkdir(parents=True, exist_ok=True)
-    pairs = trace_pairs(args.run) if args.run else saved_pairs(args.neighbors)
-    summary = generate(pairs, args.out, args.min_seed_distance, args.bins, args.label, args.log_y)
-    print(f"Plotted {summary['observations']:,} paired neighbors from {summary['questions']} questions")
+    summary = generate_neighbor_confidence_plots(args.run, args.out, args.bins, args.label, args.log_y)
+    print(f"Plotted {summary['observations']:,} paired neighbors")
     print(args.out/'top1p_after.png')
     print(args.out/'top1p_delta.png')
 

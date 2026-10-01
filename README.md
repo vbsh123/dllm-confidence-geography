@@ -256,45 +256,61 @@ choices (781/1,755); this explains the 44.2% versus 44.5% denominators.
 
 ### Just the two neighbor-confidence histograms
 
-For two standalone figures rather than the full dynamics report:
+The complete selection, before/after pairing, calculation, and plotting is in
+**`generate_neighbor_confidence_plots()`** in
+`confidence_geography/plot_neighbor_confidence.py`. It has numbered comments
+so you can read the full procedure in one function.
 
 ```bash
 python -m confidence_geography.plot_neighbor_confidence \
   --run runs/gsm8k_question_only_v1/top1 \
-  --out analysis/top1_neighbor_histograms
+  --out analysis/top1_away_from_current_region
 ```
 
-This creates `top1p_after.png` and `top1p_delta.png`, plus PDF versions, exact
-histogram-bin CSVs, `summary.json`, and the paired observations. Replace `top1`
-with `threshold` to analyze that run. `--run /path/to/top1.zip` also works.
-The file can also be run directly as
-`python confidence_geography/plot_neighbor_confidence.py ...`.
+This creates `top1p_after.png` and `top1p_delta.png`, plus PDFs, exact histogram
+CSVs, `summary.json`, `selected_reveals.jsonl.gz`, and `paired_neighbors.csv.gz`.
+Replace `top1` with `threshold` to analyze that run; a ZIP path also works.
+You can call the function directly:
 
-Each observation is an immediate neighbor (-1 or +1) of a revealed token that
-remains masked on the next forward pass. The first histogram is its top1-p
-afterward. The second is `top1-p(after) - top1-p(before)`, even if the top predicted
-token changes. Y is the percentage of paired observations, not density and not
-an equal-question average. Co-committed neighbors are excluded; a shared neighbor
-of two same-batch reveals is counted once.
+```python
+from confidence_geography.plot_neighbor_confidence import generate_neighbor_confidence_plots
 
-By default all valid reveals are included, without an arbitrary distance cutoff.
-To restrict to the distant reveals discussed earlier, add
-`--min-seed-distance 4` (index distance 4, meaning at least 3 intervening masks),
-or `--min-seed-distance 5` for at least 4 intervening masks. The distance filter
-applies to the revealed seed versus pre-existing filled tokens and prompt, not
-to the neighbor (which is always directly adjacent). `--bins 100` increases
-resolution; `--log-y` makes smaller bars easier to see.
-
-If `region_dynamics` has already generated `neighbors.csv.gz`, plotting can skip
-the trace scan:
-
-```bash
-python -m confidence_geography.plot_neighbor_confidence \
-  --neighbors analysis/top1_dynamics/neighbors.csv.gz --label top1 \
-  --out analysis/top1_neighbor_histograms
+generate_neighbor_confidence_plots(
+    run="runs/gsm8k_question_only_v1/top1",
+    out="analysis/top1_away_from_current_region",
+)
 ```
 
-No model is loaded; only Matplotlib is needed for plotting (a project dependency).
+The selection now matches **reveals away from the current region**, rather than
+all reveals or distance from every filled token:
+
+1. Before reveal step t, find contiguous filled response regions containing
+   valid commitments from step t-1. Threshold can have several current regions.
+2. Select tokens committed at t that are neither inside nor immediately beside
+   any of those regions. There is no distance-4 cutoff. A return beside an older
+   region is allowed. A token beside the current region's edge is excluded even
+   if it is far from the most recently committed token inside that region.
+3. For each selected token, inspect its immediate -1/+1 neighbors that remain
+   masked. Compare their top1 probabilities on forward t and forward t+1.
+4. Plot the after probability, and after minus before. Maxima can refer to
+   different predicted tokens. Y is percent of pooled neighbor observations.
+
+For threshold, the before/after comparison follows the entire batch. Neighbor
+positions shared by multiple seeds are counted once; co-committed neighbors are
+excluded. Selection uses pre-reveal region boundaries; simultaneous bridges are
+not an extra exclusion. Special/post-final-stop seeds and invalid previous
+anchors are excluded, and eligible nonspecial pre-reveal neighbor predictions
+are required. After predictions are retained even if special. Steps without a
+valid current region, and final steps without a next pass, do not contribute.
+
+Older generated graphs used the broader all-reveals or all-filled-distance
+filter and should not be labeled as this new analysis. The previous
+`--neighbors` and `--min-seed-distance` options were removed: old neighbor CSVs
+cannot reconstruct the current-region selection. Use the raw traces.
+
+`--bins 100` increases histogram resolution; `--log-y` helps inspect smaller
+bars. No model is loaded. Matplotlib is needed for plotting and for the small
+synthetic-trace tests of this function.
 
 ### Full region dynamics
 

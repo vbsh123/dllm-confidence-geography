@@ -27,6 +27,7 @@ def main():
     p.add_argument('--events', type=Path, required=True)
     p.add_argument('--out', type=Path, required=True, help='Output directory')
     p.add_argument('--zoom', type=int, default=20, help='Show integer distances from -zoom to +zoom')
+    p.add_argument('--label', default='Saved decoding run', help='Plot title label, e.g. TOP1 or THRESHOLD')
     args = p.parse_args()
     if args.zoom < 2:
         p.error('--zoom must be at least 2')
@@ -39,6 +40,12 @@ def main():
     populations = [('All counted fills', primary),
                    ('Adjacent option available', [r for r in primary
                     if r['answer_local_option_available'].lower() == 'true'])]
+    # Keep the JSON keys stable, but make the two plotted populations explicit.
+    panel_titles = {
+        'All counted fills': 'All valid commitments',
+        'Adjacent option available': 'Only steps where local continuation was available\n'
+                                     '(eligible masked neighbor of the previous commitment/batch)',
+    }
     fig, axes = plt.subplots(2, 2, figsize=(17, 10), constrained_layout=True)
     summaries = {}
     for row, (name, events) in enumerate(populations):
@@ -69,7 +76,7 @@ def main():
             if col == 1:
                 ax.set_xticks(xx)
                 ax.tick_params(axis='x', labelsize=8, rotation=90)
-                ax.set_title(f'{name}: zoom ±{args.zoom}, one bar per integer')
+                ax.set_title(f'{panel_titles[name]}\nZoom ±{args.zoom}; one bar per integer', fontsize=10)
                 ax.text(.02, .97,
                         f"Outside zoom: left {summary['outside_zoom_left_percent']:.1f}%, right {summary['outside_zoom_right_percent']:.1f}%\n"
                         f"Neighbors: −1 = {summary['left_neighbor_percent']:.1f}%, +1 = {summary['right_neighbor_percent']:.1f}%\n"
@@ -82,11 +89,12 @@ def main():
                 first_tick = -((-low)//tick_step) * tick_step
                 ax.set_xticks(list(range(first_tick, high+1, tick_step)))
                 ax.tick_params(axis='x', labelsize=8, rotation=60)
-                ax.set_title(f'{name}: full range, one bar per integer (n={problems} questions)')
+                ax.set_title(f'{panel_titles[name]}\nFull range; {problems} questions', fontsize=10)
         # Zoom is a crop, not a renormalized distribution; keep vertical scales equal.
         maximum = max(ax.get_ylim()[1] for ax in axes[row])
         for ax in axes[row]: ax.set_ylim(0, maximum)
-    fig.suptitle('Orange = immediate neighbors; blue = nonadjacent. Zoom retains the full-population denominator.\n'
+    fig.suptitle(f'{args.label}: distance from the previous commitment/batch\n'
+                 'Orange = immediate neighbors; blue = nonadjacent. Zoom retains the full-population denominator.\n'
                  'For batch decoding, distance is measured from the nearest token in the previous batch.')
     args.out.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.out / 'distances.png', dpi=170)
@@ -107,13 +115,14 @@ def main():
         ax.set_axisbelow(True)
         if summary['commits']:
             ax.set_title(
-                f"{name} | neighbors: −1 = {summary['left_neighbor_percent']:.1f}%, "
+                f"{panel_titles[name]}\nNeighbors: −1 = {summary['left_neighbor_percent']:.1f}%, "
                 f"+1 = {summary['right_neighbor_percent']:.1f}%\n"
                 f"Outside this window: left {summary['outside_zoom_left_percent']:.1f}%, "
                 f"right {summary['outside_zoom_right_percent']:.1f}% (included in denominator)")
         else:
-            ax.set_title(f'{name}: no qualifying fills')
-    zoom_fig.suptitle(f'ZOOM ONLY: −{args.zoom} to +{args.zoom}, every integer labeled\n'
+            ax.set_title(f'{panel_titles[name]}\nNo qualifying fills')
+    zoom_fig.suptitle(f'{args.label}: distance from the previous commitment/batch\n'
+                      f'Zoom −{args.zoom} to +{args.zoom}; tails remain in the percentage denominator\n'
                       'Orange = immediate neighbors; blue = nonadjacent')
     zoom_fig.savefig(args.out / 'distances_zoom.png', dpi=170)
     plt.close(zoom_fig)

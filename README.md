@@ -312,7 +312,64 @@ cannot reconstruct the current-region selection. Use the raw traces.
 bars. No model is loaded. Matplotlib is needed for plotting and for the small
 synthetic-trace tests of this function.
 
-### Full region dynamics
+### Questions 3.1/3.2: explicit policy-specific activity definitions
+
+The complete new function is **`generate_region_activity_plots()`** in
+`confidence_geography/plot_region_activity.py`. It has numbered sections for
+reading, region construction, activity, local ordering, and plotting. This
+definition has been written for review; its analysis/plots have not yet been run.
+
+Both policies use the same spatial definition: filled positions belong to the
+same region if consecutive filled positions have fewer than **4 intervening
+MASK tokens**. Four or more intervening masks separates regions. Regions may
+contain shorter internal masked holes. This is response-only, before final stop.
+
+- **3.1 top1:** compare the region of the current commitment with that of the
+  previous valid commitment: stay, jump to an older region, open a new region,
+  or merge regions. A merge is its own category. Only actual consecutive valid
+  commitments contribute; missing/special previous anchors are not skipped back
+  to an earlier valid step.
+- **3.1 threshold:** count spatial regions receiving at least one commitment in
+  the same batch, and the number of tokens committed in each. Regions are
+  evaluated **after the batch**, including newly formed groups. A batch that
+  merges two old regions has one resulting active region; `old_regions_touched`
+  also records the two predecessors so that distinction remains visible.
+- **3.2 both:** consider region updates with exactly one old predecessor. An
+  update follows a local left-to-right prefix when it does not expand left and
+  fills every prior mask from the old left endpoint through the rightmost newly
+  committed token. Otherwise classify left expansion or skipped earlier masks.
+  New regions and merges are excluded and counted separately. Threshold tests
+  the set of commitments, without inventing their order within a batch.
+
+The definitions, decoding policy, and denominators are printed on the graphs.
+`summary.json` contains counts and rates; `region_steps.jsonl.gz` records each
+region update, predecessors, commitments, and masks required for a prefix.
+Percentages are pooled by transition/batch/region update, as labeled. Per-question
+counts are also saved. Question 3.3's causal "why" is not answered by this function.
+
+After code review, the intended invocation is:
+
+```bash
+python -m confidence_geography.plot_region_activity \
+  --run /path/to/top1.zip --out analysis/top1_activity --mask-gap 4
+
+python -m confidence_geography.plot_region_activity \
+  --run /path/to/threshold.zip --out analysis/threshold_activity --mask-gap 4
+```
+
+Output figures (PNG and PDF):
+
+- `3_1_top1_stay_or_jump`
+- `3_1_threshold_regions_per_batch` and `3_1_threshold_tokens_per_region`
+- `3_2_local_left_to_right` for either policy
+
+Synthetic tests, also prepared for the later validation run:
+`python -m unittest discover -s tests -p test_plot_region_activity.py -v`.
+The earlier question-2 neighbor-confidence function still uses its explicitly
+documented contiguous-current-region filter; this new four-MASK definition is
+for questions 3.1/3.2.
+
+### Earlier exploratory region dynamics
 
 This additional **offline** analysis reads the same raw traces and creates PNG
 and PDF plots. It uses NumPy/Matplotlib (already project dependencies), never a

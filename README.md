@@ -254,6 +254,50 @@ choices (781/1,755); this explains the 44.2% versus 44.5% denominators.
 
 ## Distance/confidence histograms and active-region dynamics
 
+### Just the two neighbor-confidence histograms
+
+For two standalone figures rather than the full dynamics report:
+
+```bash
+python -m confidence_geography.plot_neighbor_confidence \
+  --run runs/gsm8k_question_only_v1/top1 \
+  --out analysis/top1_neighbor_histograms
+```
+
+This creates `top1p_after.png` and `top1p_delta.png`, plus PDF versions, exact
+histogram-bin CSVs, `summary.json`, and the paired observations. Replace `top1`
+with `threshold` to analyze that run. `--run /path/to/top1.zip` also works.
+The file can also be run directly as
+`python confidence_geography/plot_neighbor_confidence.py ...`.
+
+Each observation is an immediate neighbor (-1 or +1) of a revealed token that
+remains masked on the next forward pass. The first histogram is its top1-p
+afterward. The second is `top1-p(after) - top1-p(before)`, even if the top predicted
+token changes. Y is the percentage of paired observations, not density and not
+an equal-question average. Co-committed neighbors are excluded; a shared neighbor
+of two same-batch reveals is counted once.
+
+By default all valid reveals are included, without an arbitrary distance cutoff.
+To restrict to the distant reveals discussed earlier, add
+`--min-seed-distance 4` (index distance 4, meaning at least 3 intervening masks),
+or `--min-seed-distance 5` for at least 4 intervening masks. The distance filter
+applies to the revealed seed versus pre-existing filled tokens and prompt, not
+to the neighbor (which is always directly adjacent). `--bins 100` increases
+resolution; `--log-y` makes smaller bars easier to see.
+
+If `region_dynamics` has already generated `neighbors.csv.gz`, plotting can skip
+the trace scan:
+
+```bash
+python -m confidence_geography.plot_neighbor_confidence \
+  --neighbors analysis/top1_dynamics/neighbors.csv.gz --label top1 \
+  --out analysis/top1_neighbor_histograms
+```
+
+No model is loaded; only Matplotlib is needed for plotting (a project dependency).
+
+### Full region dynamics
+
 This additional **offline** analysis reads the same raw traces and creates PNG
 and PDF plots. It uses NumPy/Matplotlib (already project dependencies), never a
 model. It can also collect data with standard-library Python using `--no-plots`,

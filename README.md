@@ -161,7 +161,98 @@ bash scripts/export.sh runs/gsm8k_pilot
 
 Download the generated `.tar.gz` and `.sha256` from Vast before removing the instance. The archive contains the requested run directory, including traces, question text, answers, plots and metadata; model weights and the Hugging Face cache are outside it. Do not point `export.sh` at a cache or home directory. On receipt, verify `sha256sum -c ARCHIVE.tar.gz.sha256` from the repository root (the checksum includes the `exports/` prefix).
 
-## Validation status
+## Region creation, continuation, and confidence statistics (offline)
+
+`region_stats.py` reproduces the region analyses from saved raw traces. It uses
+**only Python's standard library**: no package installation, model downloads,
+PyTorch, GPU, or inference. Run once per policy, using either a policy directory
+or its ZIP archive. The input must contain completed `trace.jsonl.gz` files with
+their sibling `result.json` files. `cases.json` alone is not sufficient.
+
+```bash
+# From the repository root, on Vast or your own computer:
+python -m confidence_geography.region_stats \
+  --run runs/gsm8k_question_only_v1/top1 \
+  --out runs/gsm8k_question_only_v1/top1/region_stats
+
+python -m confidence_geography.region_stats \
+  --run runs/gsm8k_question_only_v1/threshold \
+  --out runs/gsm8k_question_only_v1/threshold/region_stats
+
+# ZIPs can be read directly, without extraction:
+python confidence_geography/region_stats.py \
+  --run /path/to/threshold.zip --out analysis/threshold_regions
+```
+
+Choose a new/empty output directory for each analysis. Defaults are
+`--min-distance 4 --cutoffs 0.85 0.9 --rise 0.15`. Add `--no-events` to omit the
+detailed event export. This command does not alter input traces.
+
+Outputs:
+
+- `report.md`: readable counts, definitions, percentages, and denominators.
+- `summary.json`: all metrics plus collector configuration and input provenance.
+- `rates.csv`: numerator, denominator, pooled percentage, and equal-question mean
+  for each metric. Undefined rates are null, never silently zero.
+- `signed_distances.csv`: exact integer-distance counts and percentages, for all
+  primary commitments and the subset with an adjacent alternative.
+- `events.jsonl.gz`: seed choices, before/after neighbor predictions, and actual
+  next-step region commitments, for inspecting examples.
+
+Key report metrics:
+
+| Question | Metric |
+|---|---|
+| What fraction of created regions continued next step? | `created_regions/continued_next` |
+| Out of region-creating batches, how often did the next batch continue a new region without extending older regions? | `creation_batches_next/new_only` |
+| Continue both new and older regions, older only, or neither? | Other `creation_batches_next/` categories |
+| What fraction of all token commitments created regions that continued? | `valid_commits/creation_tokens_in_continued_regions` |
+| Where did the next top1 choice go? | `top1_seed_next_valid/` categories |
+| Did top1 leave a >=90% neighbor behind? | `top1_neighbors_when_went_elsewhere/cutoff_0.9/events_any_ready` |
+| How many below-85% neighbors crossed 85%? | `top1_neighbors_valid_next/cutoff_0.85/below_before_crossing` |
+| How many stayed below 85%? | Same prefix, `below_before_still_below` |
+| Did the same predicted token cross, rather than a replacement prediction? | Same prefix, `same_token_crossing` (denominator: all paired neighbors with recorded same-token probability) |
+| What happened to threshold neighbors that remained masked? | `batch_remaining_seed_neighbors/` metrics |
+| Did a new-region fallback precede a multi-token batch? | `seed_fallback_batches/next_multiple_commits` |
+
+**Definitions matter.** Index distance 4 means three intervening masks. A seed
+is far from *all* pre-existing filled positions, including the prompt boundary.
+A strict region groups adjacent simultaneous seeds, but excludes any group
+connected by simultaneous commitments to positions closer to older text. Thus
+seed counts and strict-region counts are intentionally different. "Current"
+regions contain previous-batch commitments; "older" regions for continuation
+are everything filled after creation except the newly created strict regions.
+
+"Continued" always means directly adjacent on the **very next actual step**.
+`new_only` means no older region was extended; it does not forbid opening an
+additional isolated region in that same next batch. Batch percentages count each
+creation step once, even if it creates several regions. Region percentages count
+those regions individually. Final steps without a next pass are reported
+separately. Special/post-final-stop tokens are excluded from valid commitments;
+top1's primary next-destination/confidence population additionally excludes
+special/post-stop next choices. Neighbor confidence observations exclude
+co-committed neighbors because they are no longer masked on the next pass.
+
+These measurements are descriptive, not evidence that parallel commitments are
+independent or correct. Threshold and top1 follow different trajectories.
+
+Offline checks for this module, without any model:
+
+```bash
+python -m unittest discover -s tests -p test_region_stats.py -v
+```
+
+Validation: 12 offline tests passed. Reprocessing the downloaded 100-question
+top1 and threshold archives reproduced the discussed counts, including
+`1227/1977` below-85% neighbors crossing 85%, `747/974` top1 departures leaving a
+>=90% neighbor, `1685/1970` threshold regions continued, and `265/1488` threshold
+creation batches followed by continuation of new regions without extending old
+ones. No model inference was used for these checks. Note that top1's
+`created_regions/continued_next` uses all 1,766 creations (781 continued), while
+`top1_seed_next_valid/continue_new_region` excludes 11 special/post-stop next
+choices (781/1,755); this explains the 44.2% versus 44.5% denominators.
+
+## Earlier validation status
 
 An initial 11-test CPU suite passed using a tiny, explicitly simulated model, including trace reconstruction, actual jump distances, EOS handling, policies, probability accounting and plot generation. Subsequent local-alternative instrumentation has an additional test queued for Vast. No real LLaDA inference or GSM8K experiment was run locally. GPU/checkpoint compatibility, actual throughput, memory usage and empirical findings remain to be established by the Vast smoke and pilot runs.
 

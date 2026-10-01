@@ -176,11 +176,11 @@ def generate_neighbor_confidence_plots(run, out, bins=50, label=None, log_y=Fals
     import matplotlib.pyplot as plt
     for filename, values, low, high, bin_count, title, xlabel in [
         ('top1p_after', after_values, 0, 1, bins,
-         'Neighbor top1 probability AFTER a non-neighboring reveal',
-         'Top1 probability after reveal'),
+         'Top-1 probability AFTER a reveal away from the current region',
+         'Top-1 probability after reveal'),
         ('top1p_delta', delta_values, -1, 1, bins*2,
-         'Neighbor top1 probability change AFTER a non-neighboring reveal',
-         'Top1-p after - top1-p before (0.1 = 10 percentage points)'),
+         'Top-1 probability CHANGE after a reveal away from the current region',
+         'Top-1 probability after - before (0.1 = 10 percentage points)'),
     ]:
         width = (high-low)/bin_count
         counts = [0]*bin_count
@@ -198,7 +198,7 @@ def generate_neighbor_confidence_plots(run, out, bins=50, label=None, log_y=Fals
         ax.set_xlim(low, high)
         ax.set_xlabel(xlabel)
         ax.set_ylabel('Percentage of paired neighbor observations')
-        ax.set_title(f'{title}\n{label} | away from current region(s) | n={len(values):,}', fontsize=11)
+        ax.set_title(f'{title}\nAdjacent still-masked positions (-1/+1) | {label} decoding | n={len(values):,}', fontsize=11)
         ax.spines[['top', 'right']].set_visible(False)
         ax.grid(axis='y', alpha=.2)
         ax.set_axisbelow(True)
